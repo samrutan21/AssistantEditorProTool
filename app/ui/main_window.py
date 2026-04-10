@@ -16,6 +16,8 @@ from PySide6.QtGui import QFont, QColor
 from app.yt_downloader import YTDownloaderPanel
 from app.archive_ox import ArchiveOxPanel
 from app.csv_viewer import CSVViewerPanel
+from app.ai.api_client import PROVIDER_MODELS, PROVIDER_LABELS, fetch_ollama_models
+from app.ai.key_store import get_key, set_key
 
 # ---------------------------------------------------------------------------
 # Palette
@@ -268,6 +270,50 @@ STYLESHEET = f"""
     QPushButton#chipBtn:hover {{
         border-color: {_DANGER};
         color: {_DANGER};
+    }}
+
+    /* --- Provider bar (assistant panel) --- */
+    QWidget#providerBar {{
+        background-color: {_BG_SIDEBAR};
+        border-bottom: 1px solid {_BORDER};
+    }}
+    QComboBox#providerCombo, QComboBox#modelCombo {{
+        background-color: {_BG_INPUT};
+        color: {_TEXT_PRIMARY};
+        border: 1px solid {_BORDER};
+        border-radius: 5px;
+        padding: 5px 8px;
+        font-size: 11px;
+        min-width: 110px;
+        max-height: 28px;
+    }}
+    QComboBox#providerCombo:focus, QComboBox#modelCombo:focus {{
+        border: 1px solid {_BORDER_FOCUS};
+    }}
+    QPushButton#apiKeyBtn {{
+        background-color: transparent;
+        color: {_TEXT_MUTED};
+        border: 1px solid {_BORDER};
+        border-radius: 5px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 500;
+        max-height: 28px;
+    }}
+    QPushButton#apiKeyBtn:hover {{
+        color: {_TEXT_PRIMARY};
+        border-color: {_ACCENT};
+        background-color: {_BTN_HOVER};
+    }}
+    QPushButton#apiKeyBtn[hasKey="true"] {{
+        color: #34C759;
+        border-color: #34C759;
+    }}
+    QLabel#providerLabel {{
+        color: {_TEXT_MUTED};
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
     }}
 
     /* --- Combo box --- */
@@ -538,6 +584,7 @@ class AssistantEditorPro(QMainWindow):
         # Chat history state
         self._chat_sessions: list[dict] = []
         self._active_chat_id = ""
+        self._conversation: list[dict] = []
         self._chat_buttons: dict[str, QPushButton] = {}
         self._load_all_chats()
 
@@ -593,6 +640,9 @@ class AssistantEditorPro(QMainWindow):
             self.chat_box.setHtml(self._chat_sessions[0].get("html", ""))
             self._chat_title_label.setText(
                 self._chat_sessions[0].get("title", "New Chat")
+            )
+            self._conversation = list(
+                self._chat_sessions[0].get("conversation", [])
             )
         else:
             self._active_chat_id = str(_uuid.uuid4())
@@ -906,8 +956,49 @@ class AssistantEditorPro(QMainWindow):
         c.setContentsMargins(0, 0, 0, 0)
         c.setSpacing(0)
 
+        # Provider / model bar
+        provider_bar = QWidget()
+        provider_bar.setObjectName("providerBar")
+        provider_bar.setFixedHeight(46)
+        pb = QHBoxLayout(provider_bar)
+        pb.setContentsMargins(20, 6, 20, 6)
+        pb.setSpacing(10)
+
+        lbl_prov = QLabel("Provider")
+        lbl_prov.setObjectName("providerLabel")
+        pb.addWidget(lbl_prov)
+
+        self.provider_combo = QComboBox()
+        self.provider_combo.setObjectName("providerCombo")
+        for key in PROVIDER_MODELS:
+            self.provider_combo.addItem(PROVIDER_LABELS[key], key)
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        pb.addWidget(self.provider_combo)
+
+        lbl_model = QLabel("Model")
+        lbl_model.setObjectName("providerLabel")
+        pb.addWidget(lbl_model)
+
+        self.model_combo = QComboBox()
+        self.model_combo.setObjectName("modelCombo")
+        self.model_combo.setEditable(True)
+        self._populate_model_combo("ollama")
+        pb.addWidget(self.model_combo)
+
+        pb.addStretch()
+
+        self.btn_api_key = QPushButton("API Key")
+        self.btn_api_key.setObjectName("apiKeyBtn")
+        self.btn_api_key.setCursor(Qt.PointingHandCursor)
+        self.btn_api_key.clicked.connect(self._manage_api_key)
+        pb.addWidget(self.btn_api_key)
+        self._refresh_key_indicator()
+
+        c.addWidget(provider_bar)
+
+        # Chat title header
         chat_header = QWidget()
-        chat_header.setFixedHeight(52)
+        chat_header.setFixedHeight(42)
         chat_header.setStyleSheet(
             f"background-color: {_BG_SIDEBAR}; "
             f"border-bottom: 1px solid {_BORDER};"
@@ -932,7 +1023,7 @@ class AssistantEditorPro(QMainWindow):
         self.chat_box.setReadOnly(True)
         self.chat_box.setFont(QFont("SF Mono", 12))
         self.chat_box.setText(
-            "Ask Gemma about your reports and analysis."
+            "Send a message to start chatting."
         )
         cw.addWidget(self.chat_box, stretch=1)
         c.addWidget(chat_wrap, stretch=1)
@@ -960,8 +1051,7 @@ class AssistantEditorPro(QMainWindow):
         self.chat_input = ChatInput()
         self.chat_input.setObjectName("chatInput")
         self.chat_input.setPlaceholderText(
-            "Ask Gemma about your reports…  "
-            "(Enter to send, Shift+Enter for newline)"
+            "Ask a question…  (Enter to send, Shift+Enter for newline)"
         )
         self.chat_input.setMaximumHeight(100)
         self.chat_input.setFont(QFont("SF Pro Text", 13))
@@ -978,7 +1068,7 @@ class AssistantEditorPro(QMainWindow):
 
         action_row.addStretch()
 
-        self.btn_send = QPushButton("Send to Gemma")
+        self.btn_send = QPushButton("Send")
         self.btn_send.setObjectName("sendBtn")
         self.btn_send.setCursor(Qt.PointingHandCursor)
         action_row.addWidget(self.btn_send)
@@ -987,6 +1077,66 @@ class AssistantEditorPro(QMainWindow):
         c.addWidget(input_bar)
         layout.addWidget(content, stretch=1)
         return panel
+
+    # ── Provider / model helpers ──────────────────────────────
+
+    def _populate_model_combo(self, provider_key: str) -> None:
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        if provider_key == "ollama":
+            models = fetch_ollama_models()
+        else:
+            models = PROVIDER_MODELS.get(provider_key, [])
+        for m in models:
+            self.model_combo.addItem(m)
+        self.model_combo.blockSignals(False)
+
+    def _on_provider_changed(self, index: int) -> None:
+        key = self.provider_combo.currentData()
+        self._populate_model_combo(key or "ollama")
+        self._refresh_key_indicator()
+
+    def _refresh_key_indicator(self) -> None:
+        """Update API Key button to show whether a key is stored."""
+        provider = self.provider_combo.currentData() or "ollama"
+        if provider == "ollama":
+            self.btn_api_key.setText("Local")
+            self.btn_api_key.setProperty("hasKey", True)
+            self.btn_api_key.setEnabled(False)
+        else:
+            has = bool(get_key(provider))
+            self.btn_api_key.setText("API Key ✓" if has else "API Key")
+            self.btn_api_key.setProperty("hasKey", has)
+            self.btn_api_key.setEnabled(True)
+        self.btn_api_key.style().unpolish(self.btn_api_key)
+        self.btn_api_key.style().polish(self.btn_api_key)
+
+    def _manage_api_key(self) -> None:
+        provider = self.provider_combo.currentData() or "ollama"
+        if provider == "ollama":
+            return
+        label = PROVIDER_LABELS.get(provider, provider)
+        current = get_key(provider)
+
+        from PySide6.QtWidgets import QInputDialog
+
+        key, ok = QInputDialog.getText(
+            self,
+            f"{label} API Key",
+            f"Enter your {label} API key:\n"
+            "(leave blank to remove)",
+            QLineEdit.Password,
+            current,
+        )
+        if ok:
+            set_key(provider, key.strip())
+            self._refresh_key_indicator()
+
+    def get_provider(self) -> str:
+        return self.provider_combo.currentData() or "ollama"
+
+    def get_model(self) -> str:
+        return self.model_combo.currentText().strip()
 
     # ── Chat history methods ─────────────────────────────────
 
@@ -1011,15 +1161,19 @@ class AssistantEditorPro(QMainWindow):
         if not self._active_chat_id:
             return
         plain = self.chat_box.toPlainText().strip()
-        if not plain or plain == "Ask Gemma about your reports and analysis.":
+        if not plain or plain == "Send a message to start chatting.":
             return
 
         title = self._auto_title()
         html = self.chat_box.toHtml()
+        conversation = getattr(self, "_conversation", [])
         data = {
             "id": self._active_chat_id,
             "title": title,
             "html": html,
+            "conversation": conversation,
+            "provider": self.get_provider(),
+            "model": self.get_model(),
             "created": datetime.now().isoformat(),
         }
 
@@ -1044,8 +1198,9 @@ class AssistantEditorPro(QMainWindow):
         if self._active_chat_id:
             self._save_current_chat()
         self._active_chat_id = str(_uuid.uuid4())
+        self._conversation = []
         self.chat_box.clear()
-        self.chat_box.setText("Ask Gemma about your reports and analysis.")
+        self.chat_box.setText("Send a message to start chatting.")
         self._chat_title_label.setText("New Chat")
         self._refresh_chat_list()
 
@@ -1060,6 +1215,9 @@ class AssistantEditorPro(QMainWindow):
                 self.chat_box.setHtml(session.get("html", ""))
                 self._chat_title_label.setText(
                     session.get("title", "Chat")
+                )
+                self._conversation = list(
+                    session.get("conversation", [])
                 )
                 break
         self._refresh_chat_list()

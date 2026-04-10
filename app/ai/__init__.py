@@ -1,1 +1,1 @@
-"""Local LLM integration (Ollama / Gemma)."""
+"""AI / LLM integration — local (Ollama) and cloud (Claude, OpenAI, Gemini)."""

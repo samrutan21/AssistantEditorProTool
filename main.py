@@ -10,7 +10,8 @@ from app.core.edl_parser import EDLScanner
 from app.modules.archival import generate_archival_report
 from app.modules.music import generate_music_report
 from app.modules.effects import generate_effects_report
-from app.ai.ollama_client import GemmaWorker, prepare_attachments
+from app.ai.api_client import ChatWorker, prepare_attachments, PROVIDER_LABELS
+from app.ai.key_store import get_key
 
 _FX_DEDUP_TOLERANCE = 48  # frames (~2 sec at 24fps)
 
@@ -229,7 +230,7 @@ class AppController(AssistantEditorPro):
 
         self.report_log.append(
             "<br><b>All tasks complete.</b> "
-            "Switch to the Assistant panel to ask Gemma about these files."
+            "Switch to the Assistant panel to ask questions about these files."
         )
     
     def send_to_ai(self) -> None:
@@ -237,9 +238,24 @@ class AppController(AssistantEditorPro):
         if not user_query:
             return
 
+        provider = self.get_provider()
+        model = self.get_model()
+        api_key = "" if provider == "ollama" else get_key(provider)
+
+        if provider != "ollama" and not api_key:
+            QMessageBox.warning(
+                self,
+                "API Key Required",
+                f"Please set an API key for "
+                f"{PROVIDER_LABELS.get(provider, provider)} "
+                f"using the API Key button.",
+            )
+            return
+
         attached = list(self.attached_files)
         attachment_names = [os.path.basename(p) for p in attached]
 
+        display_name = PROVIDER_LABELS.get(provider, provider)
         display = f"<br><b>You:</b> {user_query}"
         if attachment_names:
             chips = ", ".join(attachment_names)
@@ -249,24 +265,43 @@ class AppController(AssistantEditorPro):
         self.chat_input.clear()
         self.attached_files.clear()
         self._rebuild_chips()
-        self.chat_box.append("<i>Gemma is thinking...</i>")
+        self.chat_box.append(f"<i>{display_name} is thinking...</i>")
 
         images, file_texts = prepare_attachments(attached)
-        self.worker = GemmaWorker(
-            user_query, images=images, file_texts=file_texts
+
+        self.worker = ChatWorker(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            prompt=user_query,
+            conversation=list(self._conversation),
+            images=images,
+            file_texts=file_texts,
         )
-        self.worker.response_received.connect(self.display_ai_response)
-        self.worker.error_occurred.connect(self.display_ai_error)
+        self._pending_user_msg = user_query
+        self.worker.response_received.connect(self._on_ai_response)
+        self.worker.error_occurred.connect(self._on_ai_error)
         self.worker.start()
 
-    def display_ai_response(self, text: str) -> None:
-        self.chat_box.append(f"<b>Gemma:</b> {text}")
+    def _on_ai_response(self, text: str) -> None:
+        provider = self.get_provider()
+        label = PROVIDER_LABELS.get(provider, provider)
+        self.chat_box.append(f"<b>{label}:</b> {text}")
+
+        if hasattr(self, "_pending_user_msg"):
+            self._conversation.append(
+                {"role": "user", "content": self._pending_user_msg}
+            )
+            del self._pending_user_msg
+        self._conversation.append({"role": "assistant", "content": text})
         self._save_current_chat()
 
-    def display_ai_error(self, error_msg: str) -> None:
+    def _on_ai_error(self, error_msg: str) -> None:
         self.chat_box.append(
             f"<span style='color:red;'><b>Error:</b> {error_msg}</span>"
         )
+        if hasattr(self, "_pending_user_msg"):
+            del self._pending_user_msg
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
