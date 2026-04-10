@@ -1,0 +1,5 @@
+Big export of the XML file isnt working super well. 
+
+EDLS def better for music and archival
+
+XML for effects not working too well. Wonder if it would help to have just the video, remove audio. But still all the effects are wrong in the spreadsheet. 

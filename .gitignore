@@ -1,0 +1,33 @@
+# Environment / secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+*.log
+
+# External program folders (integrated via app/ modules)
+youtube-downloader-pro-main/
+ArchiveOx_Automate/
+after-effects-llm-v2/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing / caching
+.pytest_cache/
+coverage/
+htmlcov/
+
+# Build artifacts
+dist/
+*.zxp

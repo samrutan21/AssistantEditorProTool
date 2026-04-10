@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="minimal">
+  <sequence id="seq1">
+    <clip name="A" duration="100"/>
+  </sequence>
+</project>
